@@ -1,0 +1,1270 @@
+#!/usr/bin/env ruby
+
+# Copyright (c) 2000
+#      Tanaka Akira. All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright notice, this
+#    list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright notice,
+#    this list of conditions and the following disclaimer in the documentation
+#    and/or other materials provided with the distribution.
+# 3. The name of the author may not be used to endorse or promote products
+#    derived from this software without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+
+###
+
+## CVSsuck - cvs repository mirroring tool using cvs command
+
+# usage:
+#
+# % cvssuck [-h] [-b] [-s] [-v] [-D debug-option,...] cvsroot [-o output-directory|-O output-base] [-l lock-directory|-L lock-base] module ...
+#
+# -h : print help message.
+# -b : breadth first traverse mode.
+# -s : skeleton mode.
+# -1 : add dead 1.1 if it is not available.
+# -v : verbose mode. (same as -D command,attic,leavetmp)
+# -D debug-option,... : specify debug options.
+# -o output-directory : module/dir/file,v -> output-directory/dir/file,v
+# -O output-base      : module/dir/file,v -> output-base/module/dir/file,v
+# -l lock-directory   : use lock-directory/dir as lock directory.
+# -L lock-base	      : use lock-base/module/dir as lock directory.
+
+# -o and -O is exclusive.  The last specified before module is effective.
+# -l and -L is exclusive.  The last specified after -o or -O before module is effective.
+
+# example:
+#
+# % cvssuck :pserver:anonymous@cvs.m17n.org:/cvs/cvs cvssuck
+
+# author:
+#  Tanaka Akira <akr@m17n.org>
+
+require 'getoptlong'
+require 'weakref'
+require 'fcntl'
+require 'socket' # to use gethostname
+
+def mkdir_prefix(filename)
+  filename = filename.clone
+  if filename.sub!(/\/[^\/]*\z/, '')
+    mkdir_recursive(filename)
+  end
+end
+
+def mkdir_recursive(filename)
+  if FileTest.directory?(filename)
+    print "mkdir(\"#{filename}\") -> already exist\n" if $debug.include?(:mkdir_exist)
+    return
+  end
+  begin
+    Dir.mkdir(filename)
+    print "mkdir(\"#{filename}\") -> created\n" if $debug.include?(:mkdir)
+  rescue Errno::ENOENT
+    mkdir_recursive(filename.sub(/\/[^\/]*\z/, ''))
+    retry
+  end
+end
+
+class Set<Hash
+  def Set.[](*objs)
+    s = Set.new
+    objs.each {|o| s << o}
+    return s
+  end
+
+  def <<(obj)
+    self[obj] = true
+  end
+end
+
+class LogFormatError<Exception
+end
+
+class LockFailure<Exception
+end
+
+class CouldNotLock<Exception
+end
+
+class RetryLock<Exception
+end
+
+class InvalidUnlock<Exception
+end
+
+class CVSCommandFailure<Exception
+  def initialize(status, errfile=nil)
+    open(errfile) {|f| print f.read} if errfile
+    super("status: #{status}")
+  end
+end
+
+class RCSCommandFailure<Exception
+  def initialize(status)
+    super("status: #{status}")
+  end
+end
+
+class TempDir
+  def initialize(keyword="cvssuck")
+    @count = 0
+    @top = (ENV['TMPDIR'] || "/tmp") + "/#{keyword}-#{$$}"
+    Dir.mkdir(@top, 0755)
+    @dirs = []
+    @allocated = {}
+  end
+
+  def genname
+    begin
+      @count += 1
+    end while @allocated.include?(name = "#{@top}/t#{$$}-#{@count}")
+
+    @allocated[name] = true
+    return name
+  end
+
+  def flush_dirs
+    @dirs = []
+  end
+
+  def alloc(basename=nil)
+    if basename
+      @dirs.each {|d|
+	unless @allocated.include?(name = "#{d}/#{basename}")
+	  @allocated[name] = true
+	  return name
+	end
+      }
+      d = genname
+      Dir.mkdir(d, 0755)
+      @dirs << d
+      name = "#{d}/#{basename}"
+      @allocated[name] = true
+      return name
+    else
+      return genname
+    end
+  end
+
+  def free(name)
+    raise Error.new unless @allocated.delete(name)
+    if FileTest.exist?(name)
+      system "/bin/rm", "-rf", name
+    end
+  end
+
+  def cleanup
+    system "/bin/rm", "-rf", @top
+  end
+end
+
+class Revision
+  attr_reader :arr
+  def initialize(str)
+    raise Error.new unless /\A\d+(?:\.\d+)*\z/ =~ str
+    @str = str
+    @arr = str.split(/\./); @arr.collect! {|n| n.to_i}
+  end
+
+  def to_s
+    return @str
+  end
+
+  def <=>(other)
+    result = @arr.length <=> other.arr.length
+    result = @arr <=> other.arr if result == 0
+    return result
+  end
+
+  def ==(other)
+    return false unless other.kind_of?(Revision)
+    return @arr == other.arr
+  end
+
+  def <(other)
+    return (self <=> other) < 0
+  end
+
+  def >(other)
+    return (self <=> other) > 0
+  end
+
+  def <=(other)
+    return (self <=> other) <= 0
+  end
+
+  def >=(other)
+    return (self <=> other) >= 0
+  end
+
+  def hash
+    return @arr.hash
+  end
+
+  def eql?(other)
+    return self == other
+  end
+
+  def trunk?
+    return @arr.length == 2
+  end
+
+  def branch?
+    return (@arr.length & 1) == 1
+  end
+
+  def magic_branch?
+    return (@arr.length & 1) == 0 && 4 <= @arr.length && @arr[-2] == 0
+  end
+
+  def on?(br)
+    return br.branch? && @arr.length == br.arr.length + 1 && @arr[0, @arr.length - 1] == br.arr
+  end
+
+  def same_branch?(other)
+    return (@arr.length == other.arr.length) && (trunk? || (@arr[0, @arr.length - 1] == other.arr[0, @arr.length - 1]))
+  end
+
+  def branch
+    raise Error.new if branch?
+    return Revision.new(@str.sub(/\.\d+\z/, ''))
+  end
+
+  def branch_point
+    raise Error.new if branch?
+    return Revision.new(@str.sub(/\.\d+\.\d+\z/, ''))
+  end
+
+end
+
+class RevisionSet
+  def initialize(revs=[])
+    @revs = {}
+    @head = {}
+    revs.each {|r| self << r}
+  end
+
+  def <<(rev)
+    @revs[rev] = true
+    b = rev.trunk? ? nil : rev.branch
+    @head[b] = rev if !@head.key?(b) || @head[b] < rev
+  end
+
+  def include?(rev)
+    return @revs.include?(rev)
+  end
+
+  def checkinable?(rev)
+    return if rev.branch?
+    if rev.trunk?
+      b = nil
+      if @head.key?(b)
+	yield @head[b] if @head[b] < rev
+      else
+	yield nil
+      end
+    else
+      b = rev.branch
+      if @head.key?(b)
+	yield @head[b] if @head[b] < rev
+      else
+	yield nil if @revs.include?(rev.branch_point)
+      end
+    end
+  end
+end
+
+class DeltaInfo
+  attr_reader :revision, :date, :author, :state, :branches, :log
+  def initialize(revision, date, author, state, branches, log)
+    @author = author
+    @branches = branches
+    @date = date
+    @log = log
+    @revision = revision
+    @state = state
+  end
+
+  def attic?(rcsinfo=nil)
+    return true if rcsinfo && @revision == rcsinfo.head && rcsinfo.attic?
+    return @state == 'dead'
+  end
+end
+
+class RCSInfo
+  attr_reader :rcs_file, :working_file, :head, :default_branch, :tags, :keyword_substitution, :description
+  def initialize(rcs_file, working_file, head, default_branch, tags, keyword_substitution, description)
+    @default_branch = default_branch
+    @description = description
+    @head = head
+    @keyword_substitution = keyword_substitution
+    @rcs_file = rcs_file
+    @tags = tags
+    @working_file = working_file
+  end
+
+  def attic?
+    return /\/Attic\/[^\/]+\z/ =~ @rcs_file
+  end
+end
+
+class RCSLog
+  def RCSLog.parse_log(logfile)
+    open(logfile) {|f|
+      file_delimiter = "\n=============================================================================\n"
+      delta_delimiter = "\n----------------------------"
+      while l = f.gets(file_delimiter)
+	l.chomp!(file_delimiter)
+	l.chomp!(delta_delimiter)
+	header, *deltas = l.split(/#{delta_delimiter}\n(?=revision )/o)
+	header << "\n" if header !~ /\n\z/
+	raise LogFormatError.new unless /^RCS file: (.*)\n/ =~ header; rcs_file = $1
+	raise LogFormatError.new unless /^Working file: (?:.*\/)?(.*)\n/ =~ header; working_file = $1
+	raise LogFormatError.new if /\/|\A(?:\.\.|\.)\z/ =~ working_file
+	raise LogFormatError.new unless /^head: (.*)\n/ =~ header; head = $1
+	/^branch: (.*)\n/ =~ header; default_branch = $1
+	raise LogFormatError.new unless /^symbolic names:\n((?:\t.*\n)*)/ =~ header; symbolic_names = $1
+	tags = symbolic_names.split(/\n/).collect! {|l| l.split(/[\s:]+/)[1,2]}
+	raise LogFormatError.new unless /^keyword substitution: (.*)\n/ =~ header; keyword_substitution = $1
+	if /^description:\n/ =~ header; description = $'; else description = nil; end
+	yield RCSInfo.new(
+	  rcs_file,
+	  working_file,
+	  Revision.new(head),
+	  default_branch ? Revision.new(default_branch) : nil,
+	  tags.collect! {|sym, rev| [sym, Revision.new(rev)]},
+	  keyword_substitution,
+	  description)
+	deltas.each {|r|
+	  raise LogFormatError.new unless /\Arevision ([.\d]*).*\n/ =~ r
+	  revision = $1
+	  r = $'
+	  raise LogFormatError.new unless /\Adate: (\d+\/\d+\/\d+ \d+:\d+:\d+);  author: ([a-zA-Z0-9_\-.]+);  state: (\w+);.*\n/ =~ r
+	  date = $1
+	  author = $2
+	  state = $3
+	  r = $'
+	  if /\Abranches:\s*(.*);\n/ =~ r
+	    r = $'
+	    branches = $1.split(/;\s*/)
+	  else
+	    branches = []
+	  end
+	  log = r
+	  yield DeltaInfo.new(
+	    Revision.new(revision),
+	    date,
+	    author,
+	    state,
+	    branches.collect! {|b| Revision.new(b)},
+	    log)
+	}
+	yield nil
+      end
+    }
+  end
+end
+
+class CVSWork
+  def initialize(cvsroot, tmpdir)
+    @cvsroot = cvsroot
+    @tmpdir = tmpdir
+    @workdir = @tmpdir.genname
+    @subdir = nil
+    Dir.mkdir(@workdir)
+    Dir.mkdir("#{@workdir}/CVS")
+    open("#{@workdir}/CVS/Root", "w") {|f| f.print(cvsroot, "\n")}
+    open("#{@workdir}/CVS/Repository", "w") {|f| f.print(".\n")}
+    @cache_filename = nil
+    @cache_path = nil
+  end
+
+  def setup_workdir(repository)
+    discard_cache
+    if @subdir
+      name = "#{@workdir}/#{@subdir}"
+      if FileTest.exist?(name)
+	system "/bin/rm", "-rf", name
+      end
+    end
+    @subdir = @subdir ? @subdir.succ + "" : "a"
+    Dir.mkdir("#{@workdir}/#{@subdir}")
+    Dir.mkdir("#{@workdir}/#{@subdir}/CVS")
+
+    @repository = repository
+    open("#{@workdir}/#{@subdir}/CVS/Root", "w") {|f| f.print(@cvsroot, "\n")}
+    open("#{@workdir}/#{@subdir}/CVS/Repository", "w") {|f| f.print(repository, "\n")}
+    open("#{@workdir}/#{@subdir}/CVS/Entries", "w") {|f| f.print("D\n")}
+    open("#{@workdir}/CVS/Entries", "w") {|f| f.print("D/#{@subdir}////\n")}
+  end
+
+  def run_cvs_internal(args, env=[])
+    command = ['cvs', '-f']
+    #command << '-z3' unless $debug.include?(:protocollog)
+    command += args
+    p command if $debug.include?(:command)
+    begin
+      tmpbase = @tmpdir.alloc
+      tmpout = "#{tmpbase}.stdout"
+      tmperr = "#{tmpbase}.stderr"
+      child = fork {
+	ENV['CVS_CLIENT_LOG'] = tmpbase if $debug.include?(:protocollog)
+	#env.each {|k, v| ENV[k] = v}
+	open(tmpout, "w") {|f| STDOUT.reopen(f)}
+	open(tmperr, "w") {|f| STDERR.reopen(f)}
+	Dir.chdir(@workdir)
+	exec(*command)
+      }
+      Process.waitpid(child, nil)
+      yield $?, tmpout, tmperr
+    ensure
+      File.unlink(tmpout) if (!$debug.include?(:leavetmp) && FileTest.exist?(tmpout)) || FileTest.zero?(tmpout)
+      File.unlink(tmperr) if (!$debug.include?(:leavetmp) && FileTest.exist?(tmperr)) || FileTest.zero?(tmperr)
+      @tmpdir.free(tmpbase)
+    end
+  end
+
+  def run_cvs_stderr(*args)
+    result = nil
+    run_cvs_internal(args, [['CVSCONNECT_CONNECTION', 'getsubdir']]) {|status, out, err|
+      raise CVSCommandFailure.new(status, err) if status != 0
+      open(err, 'r') {|f| result = yield f}
+    }
+    return result
+  end
+
+  def run_cvs(*args)
+    run_cvs_internal(args) {|status, out, err|
+      raise CVSCommandFailure.new(status, err) if status != 0
+    }
+  end
+
+  def grepfile(filename, pat)
+    open(filename, 'r') {|f|
+      f.each {|l|
+	return l if pat =~ l
+      }
+    }
+    return nil
+  end
+
+  def parselogs(since=nil)
+    tmpfile = nil
+    args = []
+    args << "log"
+    args << "-d#{since}<" if since
+    args << @subdir
+    run_cvs_internal(args) {|status, out, err|
+      if status == 256 && (line = grepfile(err, / nothing known about /))
+	STDERR.print "warning: `cvs log' in #{@repository} is failed with a message `#{line.chomp}'\n"
+      else
+	raise CVSCommandFailure.new(status, err) if status != 0
+      end
+      RCSLog.parse_log(out) {|obj| yield obj}
+    }
+  end
+
+  def getsubdirs
+    result = []
+    self.run_cvs_stderr("update", "-r00", "-d", "-p", @subdir) {|f|
+      f.each_line {|l|
+	result << $1 if /: New directory `#{@subdir}\/(.*)' -- ignored\n/ =~ l && /\A(?:\.|\.\.)\z/ != $1
+      }
+    }
+    return result
+  end
+
+  def getrevision(filename, rev)
+    discard_cache if @cache_filename != filename
+    # -kb is not suitable because it prevents delta transmission.
+    args = []
+    args += ["update", "-ko", "-r#{rev}", "#{@subdir}/#{filename}"]
+    self.run_cvs(*args)
+    @cache_filename = filename
+    @cache_path = "#{@workdir}/#{@subdir}/#{filename}"
+    return @cache_path
+  end
+
+  def discard_cache
+    if @cache_filename
+      begin
+	File.unlink(@cache_path)
+      rescue Errno::ENOENT
+      end
+      @cache_filename = nil
+      @cache_path = nil
+    end
+  end
+
+  def cleanup
+    discard_cache
+  end
+end
+
+class LocalRepository
+  attr_reader :tmpdir, :topdir, :lockdir
+  def initialize(tmpdir, topdir, lockdir=nil)
+    @tmpdir = tmpdir
+    @topdir = topdir
+    @lockdir = lockdir || topdir
+    # xxx: "#{topdir}/CVSROOT/config" should be examined.
+    # xxx: Maybe, ancestors of topdir as well.
+
+    @directory = {}
+  end
+
+  def directory(relpath)
+    if @directory.key?(relpath)
+      begin
+	return @directory[relpath].__getobj__
+      rescue RefError
+      end
+    end
+    directory = LocalDirectory.new(self, @topdir + relpath, @lockdir + relpath)
+    @directory[relpath] = WeakRef.new(directory)
+    return directory
+  end
+
+  def file(relpath, name)
+    return directory(relpath).file(name)
+  end
+
+  def mkdir(relpath)
+    mkdir_recursive(@topdir + relpath)
+  end
+end
+
+class LocalDirectory
+  Info = ".#{Socket.gethostname}.#{$$}"
+
+  attr_reader :repository, :rcsdir, :age
+  def initialize(repository, rcsdir, lockdir)
+    @repository = repository
+    @file = {}
+
+    @rcsdir = rcsdir
+    @lockdir = lockdir
+    @master_lock_file = "#{@lockdir}/\#cvs.lock"
+    @read_lock_file = "#{@lockdir}/\#cvs.rfl#{Info}"
+    @write_lock_file = "#{@lockdir}/\#cvs.wfl#{Info}"
+
+    @lockstate = :unlock
+    @age = 0
+  end
+
+  def file(name)
+    if @file.key?(name)
+      begin
+	return @file[name].__getobj__
+      rescue RefError
+      end
+    end
+    file = LocalFile.new(self, name)
+    @file[name] = WeakRef.new(file)
+    return file
+  end
+
+  # locking interfaces:
+  #
+  # * read_lock {...}
+  # * write_lock {...}
+
+  # for each directory, there are three states:
+  #
+  # * unlocked	   - read_lock	 -> read locked.
+  #		   - write_lock	 -> write locked.
+  # * read locked  - read_lock	 -> read locked.
+  #		   - write_lock	 -> write locked.
+  # * write locked - read_lock	 -> write locked.
+  #		   - write_lock	 -> write locked.
+
+  def unlocked?
+    return @lockstate == :unlock
+  end
+
+  def locked?
+    return @lockstate != :unlock
+  end
+
+  def read_locked?
+    return @lockstate == :read_lock
+  end
+
+  def write_locked?
+    return @lockstate == :write_lock
+  end
+
+  def disable_interrupt
+    trap('INT', 'IGNORE')
+    trap('TERM', 'IGNORE')
+    if iterator?
+      yield
+      enable_interrupt
+    end
+  end
+
+  def enable_interrupt
+    trap('INT', 'DEFAULT')
+    trap('TERM', 'DEFAULT')
+  end
+
+  def try_lock
+    n = 0
+    begin
+      disable_interrupt
+      yield
+    rescue LockFailure
+      enable_interrupt
+      n += 1
+      if n == 10
+	STDERR.print "give up to lock #{@rcsdir}.\n"
+	raise
+      end
+      secs = 45 + rand(30)
+      STDERR.print "failed to lock #{@rcsdir} (#{n} times). wait #{secs} seconds...\n"
+      sleep secs
+      retry
+    end
+  end
+
+  def create_lock_directory(filename)
+    begin
+      mkdir_prefix(filename)
+      Dir.mkdir(filename)
+    rescue Exception
+      raise LockFailure.new(filename)
+    end
+  end
+
+  def delete_lock_directory(filename)
+    Dir.rmdir(filename)
+  end
+
+  def create_lock_file(filename)
+    begin
+      mkdir_prefix(filename)
+      File.open(filename, Fcntl::O_CREAT | Fcntl::O_EXCL | Fcntl::O_WRONLY) {}
+    rescue Exception
+      raise LockFailure.new(filename)
+    end
+  end
+
+  def delete_lock_file(filename)
+    File.unlink(filename)
+  end
+
+  def create_master_lock
+    create_lock_directory(@master_lock_file)
+  end
+
+  def delete_master_lock
+    delete_lock_directory(@master_lock_file)
+  end
+
+  def create_read_lock
+    create_lock_file(@read_lock_file)
+  end
+
+  def delete_read_lock
+    delete_lock_file(@read_lock_file)
+  end
+
+  def create_write_lock
+    create_lock_file(@write_lock_file)
+  end
+
+  def delete_write_lock
+    delete_lock_file(@write_lock_file)
+  end
+
+  def check_read_lock
+    Dir.foreach(@lockdir) {|f|
+      if /\A\#cvs\.rfl/ =~ f
+	next if $' == Info
+	raise LockFailure.new(@lockdir)
+      end
+    }
+  end
+
+  def master_lock
+    create_master_lock
+    begin
+      yield
+    ensure
+      delete_master_lock
+    end
+  end
+
+  def read_lock
+    if @lockstate != :unlock
+      yield
+    else
+      try_lock {
+	master_lock {
+	  create_read_lock
+	}
+	@lockstate = :read_lock
+	@age += 1
+      }
+      begin
+	enable_interrupt
+	yield
+      ensure
+	disable_interrupt {
+	  delete_read_lock
+	  @lockstate = :unlock
+	  @age += 1
+	}
+      end
+    end
+  end
+
+  def write_lock
+    if @lockstate == :write_lock
+      yield
+    else
+      old_lock = @lockstate
+      try_lock {
+	create_master_lock
+	begin
+	  check_read_lock
+	  create_write_lock
+	rescue LockFailure
+	  delete_master_lock
+	  raise
+	end
+	@lockstate = :write_lock
+	@age += 1 if old_lock == :unlock
+      }
+      begin
+	yield
+      ensure
+	delete_write_lock
+	delete_master_lock
+	@lockstate = old_lock
+	@age += 1 if old_lock == :unlock
+	enable_interrupt
+      end
+    end
+  end
+
+end
+
+class LocalFile
+  attr_reader :name
+  def initialize(directory, name)
+    @repository = directory.repository
+    @directory = directory
+    @rcsdir = @directory.rcsdir
+    @name = name
+
+    @tmpdir = @repository.tmpdir
+
+    @cache_age = nil
+    @cache_path = nil
+
+    @cache_stat = nil
+    @cache_rcsinfo = nil
+    @cache_deltas = []
+  end
+
+  def rcs_file(dead=false)
+    if dead
+      return @rcsdir + '/Attic/' + @name + ',v'
+    else
+      return @rcsdir + '/' + @name + ',v'
+    end
+  end
+
+  def each_rcs_file_position
+    yield rcs_file(false)
+    yield rcs_file(true)
+  end
+
+  def find
+    raise Error.new if @directory.unlocked?
+    return @cache_path if @cache_path && @cache_age == @directory.age
+
+    each_rcs_file_position {|path|
+      begin
+	File.stat(path)
+	@cache_age = @directory.age
+	@cache_path = path
+	return path
+      rescue Errno::ENOENT
+      end
+    }
+    @cache_age = @directory.age
+    @cache_path = nil
+    return nil
+  end
+
+  def rcs_lock(lock_rev)
+    rcsfile = find
+    command = ["rcs", "-q", "-l#{lock_rev}", rcsfile]
+    p command if $debug.include?(:command)
+    system *command
+    raise RCSCommandFailure.new($?) if $? != 0
+  end
+
+  def checkin(attic, rcsinfo, delta, contents_file)
+    tmpci = @tmpdir.alloc(@name)
+    if FileTest.exist?(contents_file)
+      system "/bin/cp", contents_file, tmpci
+    else
+      open(tmpci, "w") {}
+    end
+    rcsfile = find || rcs_file(attic)
+    mkdir_prefix(rcsfile)
+    command = ["ci",
+      "-q#{delta.revision}",
+      "-f",
+      "-d#{delta.date}",
+      "-m" + (/\A\s*\z/ =~ delta.log ? '*** empty log message ***' : delta.log),
+      "-t-#{rcsinfo.description}",
+      "-s#{delta.state}",
+      "-w#{delta.author}",
+      rcsfile,
+      tmpci]
+    p command if $debug.include?(:command)
+    system *command
+    raise RCSCommandFailure.new($?) if $? != 0
+    @tmpdir.free(tmpci)
+    unless @cache_path
+      @cache_path = rcsfile
+    end
+  end
+
+  def adjust_attic(in_attic)
+    return if in_attic == nil
+    rcsfile = find
+    rcsfile_new = rcs_file(in_attic)
+    if rcsfile != rcsfile_new
+      mkdir_prefix(rcsfile_new)
+      print "rename #{rcsfile} -> #{rcsfile_new}\n" if $debug.include?(:attic)
+      File.rename(rcsfile, rcsfile_new)
+      @cache_path = rcsfile_new
+    end
+  end
+
+  def commit(attic, rcsinfo, delta, contents_file)
+    @directory.write_lock {
+      rev = delta.revision
+      return if revisions.include?(rev)
+      revisions.checkinable?(rev) {|lock_rev|
+	rcs_lock(lock_rev) if lock_rev
+	checkin(attic, rcsinfo, delta, contents_file)
+	# xxx: unlock if checkin is failed.
+	adjust_attic(attic)
+	@cache_deltas << delta
+	@cache_revisions << rev
+      }
+    }
+  end
+
+  def update_attributes(rcsinfo)
+    @directory.write_lock {
+      read_rcsinfo_deltas
+      return unless @cache_stat
+      local_rcsinfo = @cache_rcsinfo
+      args = []
+      if rcsinfo.default_branch != local_rcsinfo.default_branch
+	args << "-b#{rcsinfo.default_branch}"
+      end
+      if rcsinfo.keyword_substitution != local_rcsinfo.keyword_substitution
+	args << "-k#{rcsinfo.keyword_substitution}"
+      end
+      rcsinfo.tags.reverse_each {|sym, rev|
+	if pair = local_rcsinfo.tags.assoc(sym)
+	  args << "-N#{sym}:#{rev}" if pair[1] != rev
+	else
+	  args << "-n#{sym}:#{rev}"
+	end
+      }
+      unless args.empty?
+	args << find
+	command = ["rcs", "-q"] + args
+	p command if $debug.include?(:command)
+	@directory.write_lock {
+	  system *command
+	  raise RCSCommandFailure.new($?) if $? != 0
+	}
+      end
+    }
+  end
+
+  def read_rcsinfo_deltas
+    @directory.read_lock {
+      unless rcsfile = find
+	@cache_stat = nil
+	@cache_rcsinfo = nil
+	@cache_deltas = []
+	@cache_revisions = RevisionSet.new
+	return
+      end
+      stat = File.stat(rcsfile)
+      if @cache_stat != stat
+	tmp = @tmpdir.genname
+	command = ["rlog", rcsfile]
+	p command if $debug.include?(:command)
+	child = fork {
+	  open(tmp, "w") {|f| STDOUT.reopen(f)}
+	  exec(*command)
+	}
+	Process.waitpid(child, nil)
+	raise RCSCommandFailure.new($?) if $? != 0
+	@cache_stat = stat
+	@cache_rcsinfo = nil
+	@cache_deltas = []
+	@cache_revisions = RevisionSet.new
+	RCSLog.parse_log(tmp) {|obj|
+	  case obj
+	  when RCSInfo
+	    @cache_rcsinfo = obj
+	  when DeltaInfo
+	    @cache_deltas << obj
+	    @cache_revisions << obj.revision
+	  end
+	}
+	File.unlink(tmp)
+      end
+    }
+  end
+
+  def parse_rcsfile_log
+    read_rcsinfo_deltas
+    return unless @cache_stat
+    yield @cache_rcsinfo
+    @cache_deltas.each {|delta| yield delta}
+    yield nil
+  end
+
+  def revisions
+    read_rcsinfo_deltas
+    return @cache_revisions
+  end
+
+  def checkinable?(rev)
+    if @cache_revisions != nil
+      result = false
+      @cache_revisions.checkinable?(rev) {
+	result = true
+      }
+      # CVSsuck assumes that rcs files grows monotonicly.  i.e. Any revision
+      # doesn't removed.  Although the assumption makes CVSsuck faster,
+      # `cvs admin -o' or `rcs -o' can invalidate the assumption.
+      # So, you shouldn't use them when CVSsuck is running.
+      return result if result == false
+    end
+    @directory.read_lock {
+      revisions.checkinable?(rev) {
+	return true
+      }
+      return false
+    }
+  end
+
+end
+
+class CVSSuck
+  def initialize(tmpdir, remote_cvsroot, planner, local_top, lockdir=nil)
+    @tmpdir = tmpdir
+    @repository = LocalRepository.new(@tmpdir, local_top, lockdir)
+    @work = CVSWork.new(remote_cvsroot, @tmpdir)
+    @planner = planner
+  end
+
+  def cleanup
+    @work.cleanup
+  end
+
+  def update_module(remote_top, breadth_first, since=nil)
+    queue = [""]
+    while !queue.empty?
+      relpath = queue.shift
+      @work.setup_workdir(remote_top + relpath)
+      subdirs = @work.getsubdirs
+      subdirs.collect! {|subdir| "#{relpath}/#{subdir}"}
+      subdirs.each {|dir| @repository.mkdir(dir)}
+      if breadth_first
+	subdirs.each {|dir| queue << dir}
+      else
+	subdirs.reverse_each {|dir| queue.unshift(dir)}
+      end
+      Process.waitpid fork {
+	@tmpdir.flush_dirs
+	update_directory(relpath, since)
+        exit! 0
+      }
+    end
+  end
+
+  def update_directory(relpath, since)
+    local_directory = @repository.directory(relpath)
+    rcsinfo = nil
+    deltas = nil
+    @work.parselogs(since) {|obj|
+      case obj
+      when RCSInfo
+	rcsinfo = obj
+	deltas = []
+      when DeltaInfo
+	deltas << obj
+      when NilClass
+	update_file(local_directory, rcsinfo, deltas)
+      else
+	raise Error.new
+      end
+    }
+  end
+
+  def update_file(local_directory, rcsinfo, deltas)
+    local_file = local_directory.file(rcsinfo.working_file)
+    @planner.plan(rcsinfo, deltas) {|delta, local_delta, attic|
+      if local_file.checkinable?(local_delta.revision)
+	update_delta(local_file, rcsinfo, delta, local_delta, attic)
+      end
+    }
+    local_file.update_attributes(rcsinfo)
+  end
+
+  def update_delta(local_file, rcsinfo, remote_delta, local_delta, attic)
+    contents_file = nil
+    if remote_delta.state == 'dead'
+      # xxx: /dev/null is not correct.	it should point to the previous revision checkouted from local rcsfile.
+      contents_file = '/dev/null'
+    else
+      contents_file = @work.getrevision(rcsinfo.working_file, remote_delta.revision)
+    end
+
+    local_file.commit(attic, rcsinfo, local_delta, contents_file)
+  end
+
+end
+
+module Planner
+  def initialize
+    @introduce_1_1 = false
+  end
+  attr_accessor :introduce_1_1
+
+  def prepare_deltas(deltas)
+    if @introduce_1_1
+      rev11 = Revision.new('1.1')
+      unless deltas.find {|d| d.revision == rev11}
+	deltas += [DeltaInfo.new(
+	  rev11, '1970/01/01 00:00:00', 'cvssuck', 'dead', [],
+	  'introduced by CVSsuck because 1.1 is not exist.')]
+      end
+    end
+    return deltas
+  end
+
+  class Exact
+    include Planner
+
+    def plan(rcsinfo, deltas)
+      deltas = prepare_deltas(deltas)
+      rcsinfo.attic?
+      deltas = deltas.sort {|a, b| a.revision <=> b.revision}
+      deltas.each {|delta|
+	if delta.revision.trunk?
+	  attic = delta.attic?(rcsinfo)
+	else
+	  attic = nil
+	end
+	yield delta, delta, attic
+      }
+    end
+  end
+
+  class Skeleton
+    include Planner
+
+    def initialize(planner)
+      super
+      @planner = planner
+    end
+
+    def plan(rcsinfo, deltas)
+      deltas = prepare_deltas(deltas)
+      revs = filter(rcsinfo, deltas)
+
+      r2d = {}
+      deltas.each {|d| r2d[d.revision] = d}
+
+      deltas = []
+      revs.collect! {|r| deltas << r2d[r] if r2d[r]}
+      @planner.plan(rcsinfo, deltas) {|delta, local_delta, attic|
+	yield delta, local_delta, attic
+      }
+    end
+
+    def filter(rcsinfo, deltas)
+      revs = deltas.clone
+      revs.collect! {|d| d.revision}
+      revs.sort!
+
+      result = Set.new
+      r1 = nil
+      revs.each {|r2|
+	if r1 && !r1.same_branch?(r2)
+	  result << r1
+	  result << r2.branch_point unless r2.trunk?
+	end
+	r1 = r2
+      }
+      if 0 < revs.length
+	result << revs[0]
+	result << revs[-1]
+      end
+      if revs.include?(r = Revision.new("1.1"))
+	# 1.1 is important because it is a branch point of vendor branches.
+	result << r
+      end
+      rcsinfo.tags.each {|s, r|
+	if r.magic_branch?
+	  result << r.branch_point
+	elsif !r.branch?
+	  result << r
+	end
+      }
+      result = result.keys
+      result.sort!
+      return result
+    end
+  end
+end
+
+$debug_list = [:command, :attic, :protocollog, :leavetmp, :mkdir, :mkdir_exist]
+
+def usage
+  STDERR.print <<"End"
+usage: cvssuck [options] cvsroot module
+option: -h : print help message
+	-b : traverse breadth first. (default: depth first)
+	-s : grab only root, branchpoint, tagged revision and heads of branches.
+	-1 : introduce dead 1.1 if 1.1 is not available.
+	-v : same as `-D command,attic,leavetmp'.
+	-D debug-option,... : specify debug options.
+	-o output-directory : specify output directory.
+	-O output-base : specify output base directory.
+	-l lock-directory : specify lock directory.
+	-L lock-base : specify lock base directory.
+debug-option: #{$debug_list.collect {|d| d.id2name}.join(", ")}
+End
+  exit 1
+end
+
+def main
+  $debug = []
+
+  optionparser = GetoptLong.new(
+    [GetoptLong::NO_ARGUMENT, '-h'],
+    [GetoptLong::NO_ARGUMENT, '-b'],
+    [GetoptLong::NO_ARGUMENT, '-s'],
+    [GetoptLong::NO_ARGUMENT, '-1'],
+    [GetoptLong::NO_ARGUMENT, '-v'],
+    [GetoptLong::REQUIRED_ARGUMENT, '-D'],
+    [GetoptLong::REQUIRED_ARGUMENT, '-o'],
+    [GetoptLong::REQUIRED_ARGUMENT, '-O'],
+    [GetoptLong::REQUIRED_ARGUMENT, '-l'],
+    [GetoptLong::REQUIRED_ARGUMENT, '-L'])
+  optionparser.ordering=(GetoptLong::RETURN_IN_ORDER)
+
+  cvsroot = nil
+  breadth_first = nil
+  planner = Planner::Exact.new
+  introduce_1_1 = false
+  output_base = ''
+  output_directory = nil
+  lock_base = ''
+  lock_directory = nil
+
+  queue = []
+  optionparser.each {|opt, arg|
+    if opt == ''
+      if cvsroot == nil
+	cvsroot = arg
+      else
+	mod = arg
+	out = output_directory || (output_base + mod)
+	lock = lock_directory || (lock_base + mod)
+	queue << [mod, out, lock]
+      end
+    elsif opt == '-h'
+      usage
+    elsif opt == '-b'
+      breadth_first = true
+    elsif opt == '-s'
+      planner = Planner::Skeleton.new(planner)
+    elsif opt == '-1'
+      introduce_1_1 = true
+    elsif opt == '-v'
+      [:command, :attic, :leavetmp].each {|d|
+	$debug << d
+      }
+    elsif opt == '-D'
+      arg.split(/,/).each {|s|
+	d = s.intern
+	unless $debug_list.include?(d)
+	  STDERR.print "unknown debug option: #{s}\n"
+	  exit 1
+	end
+	$debug << d
+      }
+    elsif opt == '-o'
+      output_directory = arg
+      output_base = nil
+      lock_directory = output_directory
+      lock_base = nil
+    elsif opt == '-O'
+      output_directory = nil
+      output_base = arg
+      output_base += '/' unless /\/\z/ =~ output_base
+      lock_directory = nil
+      lock_base = output_base
+    elsif opt == '-l'
+      lock_directory = arg
+      lock_base = nil
+    elsif opt == '-L'
+      lock_directory = nil
+      lock_base = arg
+      lock_base += '/' unless /\/\z/ =~ lock_base
+    end
+  }
+
+  planner.introduce_1_1 = introduce_1_1
+
+  begin
+    tmpdir = TempDir.new
+    queue.each {|mod, out, lock|
+      sucker = CVSSuck.new(tmpdir, cvsroot, planner, out, lock)
+      begin
+	sucker.update_module(mod, breadth_first)
+      ensure
+	sucker.cleanup
+      end
+    }
+  ensure
+    tmpdir.cleanup unless $debug.include?(:leavetmp) && $!
+  end
+end
+
+main
