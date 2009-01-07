@@ -1,0 +1,15 @@
+This is a prepackaged version of inefficient cvs repository
+grabber using cvs command.  It was Debianised by Piotr
+Roszatycki <dexter@debian.org>, using files obtained from
+<URL:http://cvs.m17n.org/~akr/cvssuck/download.html>.
+
+More information about inefficient cvs repository grabber using cvs
+command is available from <URL:http://cvs.m17n.org/~akr/cvssuck/>.
+
+Copyright and licence notice:
+
+  Copyright (c) 2000
+       Tanaka Akira. All rights reserved.
+
+On any Debian system, you can find the complete text of the the standard
+BSD license in the file  /usr/share/common-licenses/BSD

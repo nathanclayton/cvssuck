@@ -1,0 +1,42 @@
+** CVSsuck - inefficient cvs repository grabber via cvs client/server protocol **
+
+* Home page
+
+http://cvs.m17n.org/~akr/cvssuck/
+
+* Usage
+
+% cvssuck [-h] [-b] [-s] cvsroot [-o output-directory|-O output-base] [-l lock-directory|-L lock-base] module ...
+
+-h : print help message
+-b : breadth first traverse mode
+-s : skeleton mode
+-v : verbose mode
+-D debug-option,... : specify debug options
+-o output-directory : module/dir/file,v -> output-directory/dir/file,v
+-O output-base      : module/dir/file,v -> output-base/module/dir/file,v
+-l lock-directory   : lock lock-directory/dir to access local RCS file.
+-L lock-base        : lock lock-base/module/dir to access local RCS file.
+
+* Example
+
+(0) Setup .cvspass for the repository (for pserver)
+
+% cvs -d :pserver:anonymous@cvs.m17n.org:/cvs/cvs login
+(Logging in to anonymous@cvs.m17n.org)
+CVS password: 
+
+(1) Grab a repository
+
+% cvssuck :pserver:anonymous@cvs.m17n.org:/cvs/cvs cvssuck
+
+* Requirements
+
+  ruby-1.6.1	http://www.ruby-lang.org/
+  cvs-1.11	http://www.cvshome.org/
+  rcs-5.7	ftp://ftp.cs.purdue.edu/pub/RCS/
+
+* Author
+
+Tanaka Akira <akr@m17n.org>
+http://cvs.m17n.org/~akr/

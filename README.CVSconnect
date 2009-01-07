@@ -1,0 +1,20 @@
+** CVSconnect for CVSsuck **
+
+* Description
+
+CVSconnect is an experimental tool to minimize connections to a CVS
+server especially designed to use with CVSsuck.  It sets up a special
+environment using $CVSROOT and $CVS_RSH to reuse connections to a CVS
+server.  It avoids various problems with too many connections.
+
+CVSconnect (or similar) will be integrated to a future version of
+CVSsuck.  However, it is planned that CVSsuck directly connects to a cvs
+server without cvs command.
+
+* Example
+
+% cvsconnect :pserver:anonymous@cvs.m17n.org:/cvs/cvs sh -c 'cvssuck $CVSROOT cvssuck'
+
+* Home page
+
+http://cvs.m17n.org/~akr/cvsconnect/

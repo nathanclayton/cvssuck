@@ -1,0 +1,262 @@
+2002-01-08  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: new option -1 to introduce fake 1.1.
+
+2002-01-02  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: fork for each directory.
+
+2001-10-09  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: subdirectory listing was failed in local mode.
+
+2001-02-26  Tanaka Akira  <akr@m17n.org>
+
+	* split rlog output by "\n----------------------------\nrevision "
+	instead of "\n----------------------------\n" to avoid problem with
+	a log containing "\n----------------------------\n".
+
+2000-11-23  Tanaka Akira  <akr@m17n.org>
+
+	* NEWS, ChangeLog: new file.
+
+2000-11-22  Tanaka Akira  <akr@m17n.org>
+
+	* www/download.html: CVSsuck-latest.tar.gz instead of CVSsuck.tar.gz
+
+	* www/index.html: replace download instruction to a link to
+	download page.
+
+	* www/download.html: add a link to the homepage from title image.
+
+	* www/download.html: new file.
+
+2000-11-20  Tanaka Akira  <akr@m17n.org>
+
+	* COPYING, cvssuck: add copyright notice.
+
+	* www/index.html: add link to browse source code by ViewCVS.
+
+2000-11-19  Tanaka Akira  <akr@m17n.org>
+
+	* README.CVSconnect: new file.
+
+	* cvssuck.1: refine a description for debug option.
+
+	* README: note options -v and -D.
+
+	* www/index.html: complete last slash.
+
+	* cvssuck: delete unused debug option :cvsout.
+	close temporary file before exec.
+	print stderr output when CVSCommandFailure occur.
+
+2000-11-17  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: avoid String#succ problem.
+
+2000-11-16  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: eliminate `cvs' from pattern because it depends to argv[0].
+
+2000-11-14  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: Don't use -q/-Q for cvs.
+	use different working directory for each directory.
+
+2000-11-06  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck.1, www/index.html: Note about its non-perfectness.
+
+2000-10-30  Tanaka Akira  <akr@m17n.org>
+
+	* TODO: update.
+
+	* cvssuck.1: more examples.
+
+	* cvssuck: remove the description of -Q from usage.
+	It is not implemented.
+
+	* cvssuck: new debug option mkdir and mkdir_exist.
+
+	* cvssuck, cvssuck.1: introduce debug option.
+
+	* cvssuck (read_unlock): abolished.
+
+	* cvssuck: use :unlock, :read_lock and :write_lock instead of
+	'u', 'r' and 'w'.
+
+2000-10-08  Tanaka Akira  <akr@m17n.org>
+
+	* README, TODO, cvssuck, cvssuck.1:
+	Use getoptlong.rb rather than parseargs.
+
+2000-10-07  Tanaka Akira  <akr@m17n.org>
+
+	* www/index.html: add link to CVSsuck homepage.
+
+	* www/.cvsignore: new file.
+
+	* www/Makefile, www/cvssuck.sk, www/index.html, www/supfile.cvssuck:
+	initial web pages.
+
+	* README, TODO, cvssuck, cvssuck.1:
+	remove translation mode stuff.
+
+2000-10-05  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: create subdirectories first.
+
+2000-10-04  Tanaka Akira  <akr@m17n.org>
+
+	* TODO: update.
+
+	* cvssuck: don't try to get non-existing revisions.
+
+	* cvssuck: make Revision#== to work with nil.
+
+2000-10-03  Tanaka Akira  <akr@m17n.org>
+
+	* TODO, cvssuck.1: update.
+
+	* cvssuck: comment rcs file monotonicity.
+
+	* cvssuck (Planner): new module.
+
+2000-10-02  Tanaka Akira  <akr@m17n.org>
+
+	* TODO: update.
+
+	* cvssuck: traverse depth first by default.
+
+	* cvssuck: add a debug option :verbose.
+
+	* cvssuck (LocalDirectory): new class extracted from LocalRepository.
+	(LocalFile): new class extracted from LocalRepository.
+
+2000-09-30  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: cache rcsfile position.
+
+	* cvssuck (LocalRepository): new class.
+
+2000-09-29  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: Don't use -q.  Log stdout/stderr of cvs at all.
+
+	* cvssuck: Don't use temporary top directory for named temporary file.
+
+	* cvssuck: use -Q for `cvs update'
+
+	* cvssuck: use -q instead of -Q
+
+2000-09-28  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: disable compression.
+	setup CVS_CLIENT_LOG.
+
+	* cvssuck: Use 'RCS file:' field for Attic-ness only for HEAD.
+
+	* cvssuck: Use Attic if `RCS file:' field is so.
+
+	* cvssuck: invoke `cvs log filename' for each filename if `cvs log'
+	is failed.
+
+	* cvssuck (RCSLog): new class.
+
+	* cvssuck (CVSCommandFailure#initialize): new method to take status.
+	(RCSCommandFailure#initialize): new method to take status.
+
+2000-09-27  Tanaka Akira  <akr@m17n.org>
+
+	* TODO: update.
+
+	* cvssuck: compress data transmission with -z3
+
+	* cvssuck: Don't use initialize method for Set since ruby-1.4.6
+	causes an problem.
+
+	* cvssuck: Don't use variable length arguments for Set#initialize
+	since ruby-1.4.6 causes an problem.
+
+	* cvssuck: remove invalid initialization of local_revisions.
+
+	* cvssuck (RevisionSet): new class
+
+2000-09-25  Tanaka Akira  <akr@m17n.org>
+
+	* README, TODO: update.
+
+	* cvssuck: add usage comments.
+
+	* cvssuck.1: more description about skeleton mode.
+
+	* TODO, cvssuck: tmpwork removed.
+
+2000-09-24  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: check extra arguments.
+
+	* cvssuck.1: new file.
+
+	* cvssuck: new option -o output-dir.
+
+2000-09-23  Tanaka Akira  <akr@m17n.org>
+
+	* TODO: Note about RevisionSet.
+
+	* cvssuck: revisino filter implemented.
+
+	* cvssuck: use parsearg.
+
+	* cvssuck (Revision): new class.
+
+	* README: update required versions.
+
+	* TODO: update.
+
+	* cvssuck (Tempdir): new class.
+
+2000-09-22  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck: fix locking at first checkin.
+
+	* TODO, cvssuck: lock a trunk properly even if default branch is exist.
+
+	* cvssuck (update_delta): new method extracted from `update_file'.
+
+2000-09-19  Tanaka Akira  <akr@m17n.org>
+
+	* cvssuck (update_file): refined.
+
+	* cvssuck (update_rcs_attributes): new method extracted from
+	`update_file'.
+
+	* cvssuck ($debug): new global variable.
+
+	* cvssuck (update_file): new method extracted from `update_directory'.
+
+	* cvssuck (rcs_lock): new method extracted from `update_directory'.
+	(checkin): new method extracted from `update_directory'.
+
+	* cvssuck (checkinable?):
+	new method extracted from `update_directory'.  (refactoring)
+
+	* cvssuck: refactored.
+
+2000-09-17  Tanaka Akira  <akr@m17n.org>
+
+	* TODO, cvssuck: Check an exit status of cvs.
+
+2000-09-16  Tanaka Akira  <akr@m17n.org>
+
+	* README, cvssuck: mirror -> suck.
+
+	* TODO: update.
+
+	* README, cvssuck: add author.
+
+	* cvssuck: handle empty message.
+
+	* README, TODO, cvssuck: initial version.
+
