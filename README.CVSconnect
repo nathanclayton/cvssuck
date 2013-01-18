@@ -13,7 +13,10 @@ server without cvs command.
 
 * Example
 
-% cvsconnect :pserver:anonymous@cvs.m17n.org:/cvs/cvs sh -c 'cvssuck $CVSROOT cvssuck'
+# Create ~/.cvspass
+$ cvs -d :pserver:anonymous@cvs.sourceforge.jp:/cvsroot/julius login
+# Grab the data
+$ cvsconnect :pserver:anonymous@cvs.sourceforge.jp:/cvsroot/julius sh -c 'cvssuck $CVSROOT julius4'
 
 * Home page
 
